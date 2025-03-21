@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use walrus_service::{
     client::{metrics::ClientMetrics, Config, Refiller},
     utils::load_from_yaml,
@@ -28,10 +28,36 @@ const COIN_REFILL_AMOUNT: u64 = 500_000_000;
 /// The minimum balance to keep in the wallet.
 const MIN_BALANCE: u64 = 1_000_000_000;
 
+#[derive(Parser)]
+#[clap(rename_all = "kebab-case")]
+#[clap(name = env!("CARGO_BIN_NAME"))]
+#[derive(Debug)]
+struct Args {
+    /// The path to the client configuration file containing the system object address.
+    #[clap(long, default_value = "./working_dir/client_config.yaml")]
+    config_path: PathBuf,
+    /// The port on which metrics are exposed.
+    #[clap(long, default_value = "9584")]
+    metrics_port: u16,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+#[clap(rename_all = "kebab-case")]
+enum Commands {
+    /// Register nodes based on parameters exported by the `walrus-node setup` command, send the
+    /// storage-node capability to the respective node's wallet, and optionally stake with them.
+    Stress(StressArgs),
+    /// Deploy the Walrus system contract on the Sui network.
+    Staking(StakingArgs),
+}
+
 #[derive(Parser, Debug, Clone)]
 #[clap(rename_all = "kebab-case")]
-#[command(author, version, about = "Walrus load generator", long_about = None)]
-struct Args {
+#[command(author, version, about = "Walrus stress load generator", long_about = None)]
+struct StressArgs {
     /// The target write load to submit to the system (writes/minute).
     /// The actual load may be limited by the number of clients.
     /// If the write load is 0, a single write will be performed to enable reads.
@@ -41,15 +67,9 @@ struct Args {
     /// The actual load may be limited by the number of clients.
     #[clap(long, default_value_t = 60)]
     read_load: u64,
-    /// The path to the client configuration file containing the system object address.
-    #[clap(long, default_value = "./working_dir/client_config.yaml")]
-    config_path: PathBuf,
     /// The number of clients to use for the load generation for reads and writes.
     #[clap(long, default_value = "10")]
     n_clients: NonZeroUsize,
-    /// The port on which metrics are exposed.
-    #[clap(long, default_value = "9584")]
-    metrics_port: u16,
     /// Sui network for which the config is generated.
     #[clap(long, default_value = "testnet")]
     sui_network: SuiNetwork,
@@ -79,14 +99,21 @@ struct Args {
     wallet_path: Option<PathBuf>,
 }
 
+#[derive(Parser, Debug, Clone)]
+#[clap(rename_all = "kebab-case")]
+#[command(author, version, about = "Walrus staking load generator", long_about = None)]
+struct StakingArgs {
+    /// The period in seconds to check if restaking is needed.
+    #[clap(long, default_value = "1000")]
+    restaking_period_seconds: NonZeroU64,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let _ = tracing_subscriber::fmt::try_init();
-
     let config: Config =
         load_from_yaml(args.config_path).context("Failed to load client config")?;
-    let n_clients = args.n_clients.get();
 
     // Start the metrics server.
     let metrics_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), args.metrics_port);
@@ -94,6 +121,19 @@ async fn main() -> anyhow::Result<()> {
     let prometheus_registry = registry_service.default_registry();
     let metrics = Arc::new(ClientMetrics::new(&prometheus_registry));
     tracing::info!("starting metrics server on {metrics_address}");
+
+    match args.command {
+        Commands::Stress(stress_args) => run_stress(config, metrics, stress_args).await,
+        Commands::Staking(staking_args) => run_staking(config, metrics, staking_args).await,
+    }
+}
+
+async fn run_stress(
+    config: Config,
+    metrics: Arc<ClientMetrics>,
+    args: StressArgs,
+) -> anyhow::Result<()> {
+    let n_clients = args.n_clients.get();
 
     // Start the write transaction generator.
     let gas_refill_period = Duration::from_millis(args.gas_refill_period_millis.get());
@@ -122,5 +162,28 @@ async fn main() -> anyhow::Result<()> {
     load_generator
         .start(args.write_load, args.read_load, args.inconsistent_blob_rate)
         .await?;
+    Ok(())
+}
+
+async fn run_staking(
+    config: Config,
+    metrics: Arc<ClientMetrics>,
+    args: StakingArgs,
+) -> anyhow::Result<()> {
+    let _current_epoch = 0;
+    // Start the re-staking machine.
+    let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
+    // loop {
+    tokio::time::sleep(restaking_period).await;
+    // TODO: get current epoch, if it's new, then:
+    // 1. See if there was already a staking plan for this epoch, if so, execute that plan.
+    // 2. Enumerate existing nodes, and fabricate a new staking plan for epoch + 1, or update
+    //    any existing plan with desired staking amount for each node.
+    //    Call this the "staking plan".
+    // 3. Maybe exit this sequence and go back to sleep.
+    // 4. Calculate the amount to adjust each node in order to fulfill the new desired staking
+    //    amounts.
+    // 4. Request to withdraw any needed stake
+    // }
     Ok(())
 }
