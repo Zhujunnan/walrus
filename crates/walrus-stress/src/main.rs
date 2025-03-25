@@ -4,7 +4,7 @@
 //! Load generators for stress testing the Walrus nodes.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
@@ -14,14 +14,15 @@ use std::{
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use rand::{seq::SliceRandom, RngCore};
 use sui_sdk::wallet_context::WalletContext;
-use sui_types::base_types::{ObjectID, SuiAddress};
+use sui_types::base_types::ObjectID;
 use walrus_service::{
     client::{metrics::ClientMetrics, Config, Refiller},
     utils::load_from_yaml,
 };
 use walrus_sui::{
-    client::{CoinType, ReadClient},
+    client::{CoinType, ReadClient, SuiContractClient, MIN_STAKING_THRESHOLD},
     config::load_wallet_context_from_path,
     types::StorageNode,
     utils::SuiNetwork,
@@ -180,14 +181,10 @@ async fn run_stress(
     Ok(())
 }
 
-#[derive(Debug, Default)]
-struct WalStakingState {
-    /// The amount of unstaked WAL in the wallet.
-    wal_balance: u64,
-    /// The amount of WAL staked for StakedWal.
-    wal_staked: BTreeMap<ObjectID, u64>,
-    /// When the withdrawal requests were made.
-    withdrawal_epoch: u32,
+enum StakingModeAtEpoch {
+    Stake(u32),
+    RequestWithdrawal(u32),
+    Withdraw(u32),
 }
 
 async fn run_staking(
@@ -200,11 +197,15 @@ async fn run_staking(
     // Start the re-staking machine.
     let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
     let mut last_epoch: u32 = 0;
-    let contract_client = config.new_contract_client(wallet, None).await?;
-    let mut staking_state: WalStakingState = Default::default();
+    let contract_client: SuiContractClient = config.new_contract_client(wallet, None).await?;
+    // The amount of WAL staked for StakedWal.
+    let mut wal_staked: BTreeMap<ObjectID, u64> = Default::default();
+
+    // REVIEW: is it OK to stake prior to epoch 1?
+    let mut mode = StakingModeAtEpoch::Stake(1);
     loop {
         tokio::time::sleep(restaking_period).await;
-        let committee = contract_client.read_client().current_committee().await?;
+        let mut committee = contract_client.read_client().current_committee().await?;
         let current_epoch = committee.epoch;
         if current_epoch == last_epoch {
             continue;
@@ -212,13 +213,76 @@ async fn run_staking(
 
         last_epoch = current_epoch;
         let wal_balance = contract_client.balance(CoinType::Wal).await?;
-        let sui_balance = contract_client.balance(CoinType::Sui).await?;
 
-        if staking_state.withdrawal_epoch != current_epoch {
-            // Actually withdraw our WAL.
-            todo!()
+        match mode {
+            StakingModeAtEpoch::Stake(epoch) => {
+                assert!(wal_staked.is_empty());
+                if epoch <= current_epoch {
+                    let mut nodes: Vec<StorageNode> = committee.members().to_vec();
+                    nodes.shuffle(&mut rand::thread_rng());
+
+                    // Allocate half the WAL to various nodes. This is a linear walk over all of the
+                    // WAL which we're going to stake, just to simplify the algorithm.
+                    let available_stakes = (wal_balance / MIN_STAKING_THRESHOLD) / 2;
+                    let mut node_allocations = HashMap::<ObjectID, u64>::new();
+                    for i in 0..available_stakes {
+                        node_allocations
+                            .entry(nodes[i as usize % nodes.len()].node_id)
+                            .and_modify(|x| *x += MIN_STAKING_THRESHOLD)
+                            .or_insert(MIN_STAKING_THRESHOLD);
+                    }
+                    let node_ids_with_amounts: Vec<(ObjectID, u64)> =
+                        node_allocations.into_iter().collect();
+                    contract_client
+                        .stake_with_pools(&node_ids_with_amounts)
+                        .await?;
+                }
+
+                // Re-read the current epoch to avoid a race condition.
+                committee = contract_client.read_client().current_committee().await?;
+                // After we've staked, we should schedule a withdrawal.
+                mode = StakingModeAtEpoch::RequestWithdrawal(
+                    committee.epoch + (rand::thread_rng().next_u32() % 2),
+                );
+            }
+            StakingModeAtEpoch::RequestWithdrawal(staked_at_epoch) => {
+                assert!(!wal_staked.is_empty());
+                if staked_at_epoch < current_epoch {
+                    // Request Withdrawal for any Wal we had staked.
+                    for (&staked_wal_id, _amount) in wal_staked.iter() {
+                        // Request to withdraw our WAL.
+                        contract_client
+                            .request_withdraw_stake(staked_wal_id)
+                            .await?;
+                    }
+                }
+
+                // Re-read the current epoch to avoid a race condition.
+                committee = contract_client.read_client().current_committee().await?;
+                // After we've scheduled a withdrawal, let's do a real withdrawal.
+                mode = StakingModeAtEpoch::Withdraw(committee.epoch + 1)
+            }
+            StakingModeAtEpoch::Withdraw(epoch) => {
+                if epoch <= current_epoch {
+                    let mut wal_staked_temp = Default::default();
+                    // Empty the current map so we can start our staking simulation anew.
+                    std::mem::swap(&mut wal_staked_temp, &mut wal_staked);
+
+                    // Unstake any Wal we had staked.
+                    for (staked_wal_id, _amount) in wal_staked_temp.into_iter() {
+                        // Actually withdraw our WAL.
+                        contract_client.withdraw_stake(staked_wal_id).await?;
+                    }
+                }
+
+                // Re-read the current epoch to avoid a race condition.
+                committee = contract_client.read_client().current_committee().await?;
+                // After we've withdrawn, let's schedule more staking.
+                mode = StakingModeAtEpoch::Stake(
+                    committee.epoch + (rand::thread_rng().next_u32() % 2),
+                );
+            }
         }
-        let nodes: &[StorageNode] = committee.members();
 
         // committee.
         // 1. See if there was already a staking plan for this epoch, if so, execute that plan.
