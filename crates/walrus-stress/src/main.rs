@@ -4,6 +4,7 @@
 //! Load generators for stress testing the Walrus nodes.
 
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
@@ -13,11 +14,18 @@ use std::{
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use sui_sdk::wallet_context::WalletContext;
+use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_service::{
     client::{metrics::ClientMetrics, Config, Refiller},
     utils::load_from_yaml,
 };
-use walrus_sui::{config::load_wallet_context_from_path, utils::SuiNetwork};
+use walrus_sui::{
+    client::{CoinType, ReadClient},
+    config::load_wallet_context_from_path,
+    types::StorageNode,
+    utils::SuiNetwork,
+};
 
 use crate::generator::LoadGenerator;
 
@@ -36,9 +44,21 @@ struct Args {
     /// The path to the client configuration file containing the system object address.
     #[clap(long, default_value = "./working_dir/client_config.yaml")]
     config_path: PathBuf,
+
+    /// Sui network for which the config is generated.
+    #[clap(long, default_value = "testnet")]
+    sui_network: SuiNetwork,
+
     /// The port on which metrics are exposed.
     #[clap(long, default_value = "9584")]
     metrics_port: u16,
+
+    /// The path to the Sui Wallet to be used for funding the gas.
+    ///
+    /// If specified, the funds to run the stress client will be taken from this wallet. Otherwise,
+    /// the stress client will try to use the faucet.
+    #[clap(long)]
+    wallet_path: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -70,9 +90,6 @@ struct StressArgs {
     /// The number of clients to use for the load generation for reads and writes.
     #[clap(long, default_value = "10")]
     n_clients: NonZeroUsize,
-    /// Sui network for which the config is generated.
-    #[clap(long, default_value = "testnet")]
-    sui_network: SuiNetwork,
     /// The binary logarithm of the minimum blob size to use for the load generation.
     ///
     /// Blobs sizes are uniformly distributed across the powers of two between
@@ -91,12 +108,6 @@ struct StressArgs {
     /// The fraction of writes that write inconsistent blobs.
     #[clap(long, default_value_t = 0.0)]
     inconsistent_blob_rate: f64,
-    /// The path to the Sui Wallet to be used for funding the gas.
-    ///
-    /// If specified, the funds to run the stress client will be taken from this wallet. Otherwise,
-    /// the stress client will try to use the faucet.
-    #[clap(long)]
-    wallet_path: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -122,15 +133,20 @@ async fn main() -> anyhow::Result<()> {
     let metrics = Arc::new(ClientMetrics::new(&prometheus_registry));
     tracing::info!("starting metrics server on {metrics_address}");
 
+    let wallet = load_wallet_context_from_path(args.wallet_path)?;
     match args.command {
-        Commands::Stress(stress_args) => run_stress(config, metrics, stress_args).await,
-        Commands::Staking(staking_args) => run_staking(config, metrics, staking_args).await,
+        Commands::Stress(stress_args) => {
+            run_stress(config, metrics, wallet, args.sui_network, stress_args).await
+        }
+        Commands::Staking(staking_args) => run_staking(config, metrics, wallet, staking_args).await,
     }
 }
 
 async fn run_stress(
     config: Config,
     metrics: Arc<ClientMetrics>,
+    wallet: WalletContext,
+    sui_network: SuiNetwork,
     args: StressArgs,
 ) -> anyhow::Result<()> {
     let n_clients = args.n_clients.get();
@@ -138,7 +154,6 @@ async fn run_stress(
     // Start the write transaction generator.
     let gas_refill_period = Duration::from_millis(args.gas_refill_period_millis.get());
 
-    let wallet = load_wallet_context_from_path(args.wallet_path)?;
     let contract_client = config.new_contract_client(wallet, None).await?;
 
     let refiller = Refiller::new(
@@ -152,7 +167,7 @@ async fn run_stress(
         args.min_size_log2,
         args.max_size_log2,
         config,
-        args.sui_network,
+        sui_network,
         gas_refill_period,
         metrics,
         refiller,
@@ -165,22 +180,47 @@ async fn run_stress(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct WalStakingState {
+    /// The amount of unstaked WAL in the wallet.
+    wal_balance: u64,
+    /// The amount of WAL staked for StakedWal.
+    wal_staked: BTreeMap<ObjectID, u64>,
+    /// When the withdrawal requests were made.
+    withdrawal_epoch: u32,
+}
+
 async fn run_staking(
     config: Config,
     _metrics: Arc<ClientMetrics>,
+    wallet: WalletContext,
     args: StakingArgs,
 ) -> anyhow::Result<()> {
     let _current_epoch = 0;
     // Start the re-staking machine.
     let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
-
-    let mut last_epoch: Option<u32> = None;
+    let mut last_epoch: u32 = 0;
+    let contract_client = config.new_contract_client(wallet, None).await?;
+    let mut staking_state: WalStakingState = Default::default();
     loop {
         tokio::time::sleep(restaking_period).await;
-        if last_epoch.is_none() {
-            last_epoch = Some(0);
+        let committee = contract_client.read_client().current_committee().await?;
+        let current_epoch = committee.epoch;
+        if current_epoch == last_epoch {
+            continue;
         }
-        // TODO: get current epoch, if it's new, then:
+
+        last_epoch = current_epoch;
+        let wal_balance = contract_client.balance(CoinType::Wal).await?;
+        let sui_balance = contract_client.balance(CoinType::Sui).await?;
+
+        if staking_state.withdrawal_epoch != current_epoch {
+            // Actually withdraw our WAL.
+            todo!()
+        }
+        let nodes: &[StorageNode] = committee.members();
+
+        // committee.
         // 1. See if there was already a staking plan for this epoch, if so, execute that plan.
         // 2. Enumerate existing nodes, and fabricate a new staking plan for epoch + 1, or update
         //    any existing plan with desired staking amount for each node.

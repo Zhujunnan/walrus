@@ -613,6 +613,8 @@ impl SuiContractClient {
         .await
     }
 
+    // TODO
+
     /// Call to end voting and finalize the next epoch parameters.
     ///
     /// Can be called once the voting period is over.

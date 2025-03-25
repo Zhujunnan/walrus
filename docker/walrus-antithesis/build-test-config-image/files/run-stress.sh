@@ -40,10 +40,10 @@ echo "starting stress client"
 ## -----------------------------------------------------------------------------
 RUST_BACKTRACE=1 RUST_LOG=info /opt/walrus/bin/walrus-stress \
     --config-path /opt/walrus/outputs/client_config.yaml \
+    --sui-network "http://10.0.0.20:9000;http://10.0.0.20:9123/gas" \
+    --wallet-path /root/.sui/sui_config/client.yaml \
     stress \
     --write-load 10 \
     --read-load 10 \
     --n-clients 2 \
-    --sui-network "http://10.0.0.20:9000;http://10.0.0.20:9123/gas" \
-    --wallet-path /root/.sui/sui_config/client.yaml \
     --gas-refill-period-millis 60000
