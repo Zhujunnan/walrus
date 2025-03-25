@@ -844,7 +844,7 @@ impl WalrusPtbBuilder {
                 .await?,
         ];
         let wal = self.walrus_move_call(contracts::staking::withdraw_stake, withdraw_stake_args)?;
-        self.transfer(None, once(wal.into())).await?;
+        self.add_result_to_be_consumed(wal);
         Ok(())
     }
 
