@@ -116,7 +116,7 @@ struct StressArgs {
 #[command(author, version, about = "Walrus staking load generator", long_about = None)]
 struct StakingArgs {
     /// The period in seconds to check if restaking is needed.
-    #[clap(long, default_value = "1000")]
+    #[clap(long, default_value = "10")]
     restaking_period_seconds: NonZeroU64,
 }
 
@@ -196,7 +196,6 @@ async fn run_staking(
     let _current_epoch = 0;
     // Start the re-staking machine.
     let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
-    let mut last_epoch: u32 = 0;
     let contract_client: SuiContractClient = config.new_contract_client(wallet, None).await?;
     // The amount of WAL staked for StakedWal.
     let mut wal_staked: BTreeMap<ObjectID, u64> = Default::default();
@@ -207,11 +206,6 @@ async fn run_staking(
         tokio::time::sleep(restaking_period).await;
         let mut committee = contract_client.read_client().current_committee().await?;
         let current_epoch = committee.epoch;
-        if current_epoch == last_epoch {
-            continue;
-        }
-
-        last_epoch = current_epoch;
         let wal_balance = contract_client.balance(CoinType::Wal).await?;
 
         match mode {
