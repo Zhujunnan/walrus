@@ -167,23 +167,27 @@ async fn run_stress(
 
 async fn run_staking(
     config: Config,
-    metrics: Arc<ClientMetrics>,
+    _metrics: Arc<ClientMetrics>,
     args: StakingArgs,
 ) -> anyhow::Result<()> {
     let _current_epoch = 0;
     // Start the re-staking machine.
     let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
-    // loop {
-    tokio::time::sleep(restaking_period).await;
-    // TODO: get current epoch, if it's new, then:
-    // 1. See if there was already a staking plan for this epoch, if so, execute that plan.
-    // 2. Enumerate existing nodes, and fabricate a new staking plan for epoch + 1, or update
-    //    any existing plan with desired staking amount for each node.
-    //    Call this the "staking plan".
-    // 3. Maybe exit this sequence and go back to sleep.
-    // 4. Calculate the amount to adjust each node in order to fulfill the new desired staking
-    //    amounts.
-    // 4. Request to withdraw any needed stake
-    // }
-    Ok(())
+
+    let mut last_epoch: Option<u32> = None;
+    loop {
+        tokio::time::sleep(restaking_period).await;
+        if last_epoch.is_none() {
+            last_epoch = Some(0);
+        }
+        // TODO: get current epoch, if it's new, then:
+        // 1. See if there was already a staking plan for this epoch, if so, execute that plan.
+        // 2. Enumerate existing nodes, and fabricate a new staking plan for epoch + 1, or update
+        //    any existing plan with desired staking amount for each node.
+        //    Call this the "staking plan".
+        // 3. Maybe exit this sequence and go back to sleep.
+        // 4. Calculate the amount to adjust each node in order to fulfill the new desired staking
+        //    amounts.
+        // 4. Request to withdraw any needed stake
+    }
 }
