@@ -213,13 +213,19 @@ async fn run_staking(
                 assert!(wal_staked.is_empty());
                 if epoch <= current_epoch {
                     let mut nodes: Vec<StorageNode> = committee.members().to_vec();
+
+                    // Shuffle the nodes to determine which ones get preferential staking
+                    // treatment.
                     nodes.shuffle(&mut rand::thread_rng());
 
                     // Allocate half the WAL to various nodes. This is a linear walk over all of the
-                    // WAL which we're going to stake, just to simplify the algorithm.
+                    // WAL which we're going to stake, just to simplify the algorithm. Each "stake"
+                    // below is one unit of MIN_STAKING_THRESHOLD.
                     let available_stakes = (wal_balance / MIN_STAKING_THRESHOLD) / 2;
                     let mut node_allocations = HashMap::<ObjectID, u64>::new();
                     for i in 0..available_stakes {
+                        // Loop through the nodes in shuffled order until we've allocated all our
+                        // stake.
                         node_allocations
                             .entry(nodes[i as usize % nodes.len()].node_id)
                             .and_modify(|x| *x += MIN_STAKING_THRESHOLD)
@@ -234,9 +240,9 @@ async fn run_staking(
 
                 // Re-read the current epoch to avoid a race condition.
                 committee = contract_client.read_client().current_committee().await?;
-                // After we've staked, we should schedule a withdrawal.
+                // Some time after we've staked, we should schedule a withdrawal.
                 mode = StakingModeAtEpoch::RequestWithdrawal(
-                    committee.epoch + (rand::thread_rng().next_u32() % 2),
+                    committee.epoch + (rand::thread_rng().next_u32() % 3),
                 );
             }
             StakingModeAtEpoch::RequestWithdrawal(staked_at_epoch) => {
