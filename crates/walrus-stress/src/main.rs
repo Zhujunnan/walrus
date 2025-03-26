@@ -233,6 +233,7 @@ async fn run_staking(
                     let staked_wals = contract_client
                         .stake_with_pools(&node_ids_with_amounts)
                         .await?;
+                    // Save the list of staked WALs so we can withdraw them later.
                     wal_staked.extend(staked_wals.into_iter().map(|x| x.id));
                 }
 
