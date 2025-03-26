@@ -1,5 +1,5 @@
 #!/bin/bash
-export DOCKER_DEFAULT_PLATFORM=linux/amd64
+# export DOCKER_DEFAULT_PLATFORM=linux/amd64
 
 msg() {
   echo "$0: note: $*" >&2
@@ -43,7 +43,7 @@ export SUI_IMAGE_NAME="mysten/sui-tools:$sui_version"
 # shellcheck disable=SC2155
 # export SUI_PLATFORM=linux/"$(uname -m)"
 # shellcheck disable=SC2155
-# export WALRUS_PLATFORM=linux/"$(uname -m)"
+export WALRUS_PLATFORM=linux/"$(uname -m)"
 
 # Build walrus-service image.
 msg "Running walrus-service build"
