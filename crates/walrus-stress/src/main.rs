@@ -72,7 +72,7 @@ enum Commands {
     /// storage-node capability to the respective node's wallet, and optionally stake with them.
     Stress(StressArgs),
     /// Deploy the Walrus system contract on the Sui network.
-    Staking(StakingArgs),
+    Staking,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -111,15 +111,6 @@ struct StressArgs {
     inconsistent_blob_rate: f64,
 }
 
-#[derive(Parser, Debug, Clone)]
-#[clap(rename_all = "kebab-case")]
-#[command(author, version, about = "Walrus staking load generator", long_about = None)]
-struct StakingArgs {
-    /// The period in seconds to check if restaking is needed.
-    #[clap(long, default_value = "10")]
-    restaking_period_seconds: NonZeroU64,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -139,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Stress(stress_args) => {
             run_stress(config, metrics, wallet, args.sui_network, stress_args).await
         }
-        Commands::Staking(staking_args) => run_staking(config, metrics, wallet, staking_args).await,
+        Commands::Staking => run_staking(config, metrics, wallet).await,
     }
 }
 
@@ -181,6 +172,7 @@ async fn run_stress(
     Ok(())
 }
 
+#[derive(Debug)]
 enum StakingModeAtEpoch {
     Stake(u32),
     RequestWithdrawal(u32),
@@ -191,10 +183,10 @@ async fn run_staking(
     config: Config,
     _metrics: Arc<ClientMetrics>,
     wallet: WalletContext,
-    args: StakingArgs,
 ) -> anyhow::Result<()> {
+    tracing::info!("Starting the staking stress runner.");
     // Start the re-staking machine.
-    let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
+    let restaking_period = Duration::from_secs(15);
     let contract_client: SuiContractClient = config.new_contract_client(wallet, None).await?;
 
     // The Staked Wal at any given time.
@@ -206,6 +198,7 @@ async fn run_staking(
         let mut committee = contract_client.read_client().current_committee().await?;
         let current_epoch = committee.epoch;
         let wal_balance = contract_client.balance(CoinType::Wal).await?;
+        tracing::info!(current_epoch, ?mode, wal_balance, "woke up");
 
         match mode {
             StakingModeAtEpoch::Stake(epoch) => {
@@ -234,6 +227,7 @@ async fn run_staking(
                             .and_modify(|x| *x += MIN_STAKING_THRESHOLD)
                             .or_insert(MIN_STAKING_THRESHOLD);
                     }
+                    tracing::info!(current_epoch, ?node_allocations, "staking with allocations");
                     let node_ids_with_amounts: Vec<(ObjectID, u64)> =
                         node_allocations.into_iter().collect();
                     let staked_wals = contract_client
