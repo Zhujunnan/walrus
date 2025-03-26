@@ -4,7 +4,7 @@
 //! Load generators for stress testing the Walrus nodes.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
@@ -193,15 +193,14 @@ async fn run_staking(
     wallet: WalletContext,
     args: StakingArgs,
 ) -> anyhow::Result<()> {
-    let _current_epoch = 0;
     // Start the re-staking machine.
     let restaking_period = Duration::from_secs(args.restaking_period_seconds.get());
     let contract_client: SuiContractClient = config.new_contract_client(wallet, None).await?;
-    // The amount of WAL staked for StakedWal.
-    let mut wal_staked: BTreeMap<ObjectID, u64> = Default::default();
 
-    // REVIEW: is it OK to stake prior to epoch 1?
-    let mut mode = StakingModeAtEpoch::Stake(1);
+    // The Staked Wal at any given time.
+    let mut wal_staked: HashSet<ObjectID> = Default::default();
+
+    let mut mode = StakingModeAtEpoch::Stake(rand::thread_rng().next_u32() % 2);
     loop {
         tokio::time::sleep(restaking_period).await;
         let mut committee = contract_client.read_client().current_committee().await?;
@@ -212,11 +211,15 @@ async fn run_staking(
             StakingModeAtEpoch::Stake(epoch) => {
                 assert!(wal_staked.is_empty());
                 if epoch <= current_epoch {
+                    // Get the current committee. (Consider also staking on the next committee?)
                     let mut nodes: Vec<StorageNode> = committee.members().to_vec();
 
                     // Shuffle the nodes to determine which ones get preferential staking
                     // treatment.
                     nodes.shuffle(&mut rand::thread_rng());
+
+                    // Eliminate 1/3 of the nodes to increase shard movement.
+                    nodes.truncate(std::cmp::max(1, nodes.len() * 2 / 3));
 
                     // Allocate half the WAL to various nodes. This is a linear walk over all of the
                     // WAL which we're going to stake, just to simplify the algorithm. Each "stake"
@@ -233,9 +236,10 @@ async fn run_staking(
                     }
                     let node_ids_with_amounts: Vec<(ObjectID, u64)> =
                         node_allocations.into_iter().collect();
-                    contract_client
+                    let staked_wals = contract_client
                         .stake_with_pools(&node_ids_with_amounts)
                         .await?;
+                    wal_staked.extend(staked_wals.into_iter().map(|x| x.id));
                 }
 
                 // Re-read the current epoch to avoid a race condition.
@@ -249,7 +253,7 @@ async fn run_staking(
                 assert!(!wal_staked.is_empty());
                 if staked_at_epoch < current_epoch {
                     // Request Withdrawal for any Wal we had staked.
-                    for (&staked_wal_id, _amount) in wal_staked.iter() {
+                    for &staked_wal_id in wal_staked.iter() {
                         // Request to withdraw our WAL.
                         contract_client
                             .request_withdraw_stake(staked_wal_id)
@@ -269,7 +273,7 @@ async fn run_staking(
                     std::mem::swap(&mut wal_staked_temp, &mut wal_staked);
 
                     // Unstake any Wal we had staked.
-                    for (staked_wal_id, _amount) in wal_staked_temp.into_iter() {
+                    for staked_wal_id in wal_staked_temp {
                         // Actually withdraw our WAL.
                         contract_client.withdraw_stake(staked_wal_id).await?;
                     }
@@ -283,15 +287,5 @@ async fn run_staking(
                 );
             }
         }
-
-        // committee.
-        // 1. See if there was already a staking plan for this epoch, if so, execute that plan.
-        // 2. Enumerate existing nodes, and fabricate a new staking plan for epoch + 1, or update
-        //    any existing plan with desired staking amount for each node.
-        //    Call this the "staking plan".
-        // 3. Maybe exit this sequence and go back to sleep.
-        // 4. Calculate the amount to adjust each node in order to fulfill the new desired staking
-        //    amounts.
-        // 4. Request to withdraw any needed stake
     }
 }
