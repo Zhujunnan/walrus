@@ -235,14 +235,14 @@ async fn run_staking(
                         .await?;
                     // Save the list of staked WALs so we can withdraw them later.
                     wal_staked.extend(staked_wals.into_iter().map(|x| x.id));
-                }
 
-                // Re-read the current epoch to avoid a race condition.
-                committee = contract_client.read_client().current_committee().await?;
-                // Some time after we've staked, we should schedule a withdrawal.
-                mode = StakingModeAtEpoch::RequestWithdrawal(
-                    committee.epoch + (rand::thread_rng().next_u32() % 3),
-                );
+                    // Re-read the current epoch to avoid a race condition.
+                    committee = contract_client.read_client().current_committee().await?;
+                    // Some time after we've staked, we should schedule a withdrawal.
+                    mode = StakingModeAtEpoch::RequestWithdrawal(
+                        committee.epoch + 1 + (rand::thread_rng().next_u32() % 3),
+                    );
+                }
             }
             StakingModeAtEpoch::RequestWithdrawal(staked_at_epoch) => {
                 assert!(!wal_staked.is_empty());
@@ -254,16 +254,28 @@ async fn run_staking(
                             .request_withdraw_stake(staked_wal_id)
                             .await?;
                     }
-                }
+                    tracing::info!(
+                        current_epoch,
+                        ?wal_staked,
+                        "requested withdrawal of staking allocations"
+                    );
 
-                // Re-read the current epoch to avoid a race condition.
-                committee = contract_client.read_client().current_committee().await?;
-                // After we've scheduled a withdrawal, let's do a real withdrawal.
-                mode = StakingModeAtEpoch::Withdraw(committee.epoch + 1)
+                    // Re-read the current epoch to avoid a race condition.
+                    committee = contract_client.read_client().current_committee().await?;
+                    // After we've scheduled a withdrawal, let's do a real withdrawal.
+                    mode = StakingModeAtEpoch::Withdraw(committee.epoch + 1)
+                }
             }
             StakingModeAtEpoch::Withdraw(epoch) => {
                 if epoch <= current_epoch {
                     let mut wal_staked_temp = Default::default();
+
+                    tracing::info!(
+                        current_epoch,
+                        ?wal_staked,
+                        "withdrawing staking allocations"
+                    );
+
                     // Empty the current map so we can start our staking simulation anew.
                     std::mem::swap(&mut wal_staked_temp, &mut wal_staked);
 
@@ -272,14 +284,14 @@ async fn run_staking(
                         // Actually withdraw our WAL.
                         contract_client.withdraw_stake(staked_wal_id).await?;
                     }
-                }
 
-                // Re-read the current epoch to avoid a race condition.
-                committee = contract_client.read_client().current_committee().await?;
-                // After we've withdrawn, let's schedule more staking.
-                mode = StakingModeAtEpoch::Stake(
-                    committee.epoch + (rand::thread_rng().next_u32() % 2),
-                );
+                    // Re-read the current epoch to avoid a race condition.
+                    committee = contract_client.read_client().current_committee().await?;
+                    // After we've withdrawn, let's schedule more staking.
+                    mode = StakingModeAtEpoch::Stake(
+                        committee.epoch + 1 + (rand::thread_rng().next_u32() % 2),
+                    );
+                }
             }
         }
     }
