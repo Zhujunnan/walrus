@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2155
 # export DOCKER_DEFAULT_PLATFORM=linux/amd64
 
 msg() {
@@ -23,7 +24,6 @@ msg "Using SUI version: $sui_version"
 
 local_sui_image_name=sui-tools:"$sui_version"
 
-if false; then
 (
   # Assume SUI is in ../sui.
   cd ../sui || die "no sui dir?"
@@ -33,21 +33,18 @@ if false; then
   ./build.sh -t "$local_sui_image_name" || die "Failed to build SUI image"
   # Get SUI image and push to local registry.
 ) || die "failed to build SUI image"
-fi
 
-local_walrus_image=walrus-service:pseudo-local-antithesis
+local_walrus_image="walrus-antithesis:$sui_version"
 
 export WALRUS_IMAGE_NAME="$local_walrus_image"
 export SUI_IMAGE_NAME="mysten/sui-tools:$sui_version"
 
-# shellcheck disable=SC2155
-# export SUI_PLATFORM=linux/"$(uname -m)"
-# shellcheck disable=SC2155
+export SUI_PLATFORM=linux/"$(uname -m)"
 export WALRUS_PLATFORM=linux/"$(uname -m)"
 
-# Build walrus-service image.
-msg "Running walrus-service build"
-docker/walrus-service/build.sh -t "$local_walrus_image" || die "Failed to build walrus-service image"
+# Build walrus-antithesis image.
+msg "Running walrus-antithesis build"
+docker/walrus-antithesis/build-walrus-image-for-antithesis/build.sh -t "$local_walrus_image" || die "Failed to build walrus-antithesis image"
 
 msg "Running docker compose"
 cd "$build_dir" || die "Failed to chdir to build dir"
