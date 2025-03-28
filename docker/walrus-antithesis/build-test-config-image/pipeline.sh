@@ -44,7 +44,10 @@ export WALRUS_PLATFORM=linux/"$(uname -m)"
 
 # Build walrus-antithesis image.
 msg "Running walrus-antithesis build"
-docker/walrus-antithesis/build-walrus-image-for-antithesis/build.sh -t "$local_walrus_image" || die "Failed to build walrus-antithesis image"
+docker/walrus-antithesis/build-walrus-image-for-antithesis/build.sh \
+  --build-arg RUSTFLAGS= \
+  --build-arg LD_LIBRARY_PATH= \
+  -t "$local_walrus_image" || die "Failed to build walrus-antithesis image"
 
 msg "Running docker compose"
 cd "$build_dir" || die "Failed to chdir to build dir"
